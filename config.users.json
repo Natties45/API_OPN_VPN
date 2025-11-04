@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "Name": "alice",
+      "Password": "mis@Pass01",
+      "Full": "Alice (VPN User)",
+      "Email": "alice@example.com"
+    },
+    {
+      "Name": "bob",
+      "Password": "mis@Pass01",
+      "Full": "Bob (VPN User)",
+      "Email": "bob@example.com"
+    }
+  ]
+}

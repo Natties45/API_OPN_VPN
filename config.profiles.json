@@ -1,0 +1,24 @@
+{
+  "profiles": [
+    {
+      "ProfileName": "OPNsense-Site-A (103.138.178.72)",
+      "ApiBaseUrl": "https://103.138.178.72:4443",
+      
+      "ApiKey": "<<ใส่>>",
+      "ApiSecret": "<<ใส่>>",
+
+      "SshHost": "103.138.178.72",
+      "SshUser": "<<ใส่>>",
+      "SshPass": "<<ใส่>>"
+    },
+    {
+      "ProfileName": "OPNsense-Site-B (Test)",
+      "ApiBaseUrl": "https://192.168.1.1:4443",
+      "ApiKey": "YOUR_KEY_HERE",
+      "ApiSecret": "YOUR_SECRET_HERE",
+      "SshHost": "192.168.1.1",
+      "SshUser": "root",
+      "SshPass": "opn_password"
+    }
+  ]
+}
