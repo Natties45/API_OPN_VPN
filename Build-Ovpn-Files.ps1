@@ -76,7 +76,16 @@ $ServerCertJson = Get-Content (Join-Path $BuildDataPath "server_cert.json") | Co
 
 # --- 4. Extract Shared Variables ---
 $CaPayload        = $CaJson.crt_payload.Trim()
-$StaticKeyPayload = $StaticKeyJson.key.Trim()
+$StaticKeyPayload = $null
+if ($StaticKeyJson.PSObject.Properties["key"]) {
+    $StaticKeyPayload = [string]$StaticKeyJson.key
+} elseif ($StaticKeyJson.PSObject.Properties["statickey"]) {
+    $StaticKeyPayload = [string]$StaticKeyJson.statickey.key
+}
+if (-not $StaticKeyPayload) {
+    throw "Missing 'key' payload in static_key.json. Expected either top-level 'key' or 'statickey.key'."
+}
+$StaticKeyPayload = $StaticKeyPayload.Trim()
 $ServerHost       = $SelectedProfile.SshHost
 $ServerPort       = $Settings.Firewall.VpnListenPort
 $ServerProto      = $Settings.Firewall.VpnProto
@@ -148,4 +157,5 @@ Write-Host "========================================================" -Foregroun
 Write-Host "✅ OVPN Build Complete."
 Write-Host "  Files saved in: $OvpnOutputPath"
 Write-Host "========================================================" -ForegroundColor Cyan
+
 

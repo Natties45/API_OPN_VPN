@@ -5,8 +5,34 @@
 $ErrorActionPreference = 'Stop'
 
 # --- TLS / HTTP Settings ---
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+# Prefer the OS defaults when available (adds TLS 1.3, SChannel policy etc.)
+$availableProtocols = [Enum]::GetNames([Net.SecurityProtocolType])
+if ($availableProtocols -contains "SystemDefault") {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault
+} else {
+    $protocols = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls
+    if ($availableProtocols -contains "Tls13") {
+        $protocols = $protocols -bor ([Enum]::Parse([Net.SecurityProtocolType], "Tls13"))
+    }
+    [Net.ServicePointManager]::SecurityProtocol = $protocols
+}
+# Accept all certificates via CLR delegate (works on pwsh background threads)
+if (-not ('OPNsense.PS.AcceptAllCertsPolicy' -as [type])) {
+    Add-Type @"
+using System;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+
+namespace OPNsense.PS {
+    public static class AcceptAllCertsPolicy {
+        public static bool Validate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors) {
+            return true;
+        }
+    }
+}
+"@
+}
+[System.Net.ServicePointManager]::ServerCertificateValidationCallback = [System.Net.Security.RemoteCertificateValidationCallback]([OPNsense.PS.AcceptAllCertsPolicy]::Validate)
 $Global:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 # --- JSON Helpers ---
@@ -215,3 +241,9 @@ function Ensure-PoshSSH {
   }
   Import-Module Posh-SSH -ErrorAction Stop
 }
+
+
+
+
+
+

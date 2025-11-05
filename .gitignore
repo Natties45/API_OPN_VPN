@@ -1,3 +1,32 @@
 output_data/
 *.ovpn
 temp_json/
+# Python venv
+.venv/
+venv/
+env/
+
+# Bytecode / cache
+__pycache__/
+*.py[cod]
+
+# Dist / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Env files (ถ้ามี)
+.env
+*.env
