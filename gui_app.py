@@ -386,6 +386,66 @@ class App(tk.Tk):
 
         self._refresh_action_profile_selector()
 
+    def _refresh_action_profile_selector(self) -> None:
+        """Update the combobox that picks a profile for script execution."""
+
+        if not self.action_profile_combo:
+            return
+
+        profile_names: List[str] = []
+        for index, profile in enumerate(self.profiles, start=1):
+            name = profile.get("ProfileName", "").strip()
+            profile_names.append(name or f"Profile {index}")
+
+        self.action_profile_combo["values"] = profile_names
+
+        if not profile_names:
+            self.action_profile_var.set("")
+            self.action_profile_combo.set("")
+            self.full_setup_button.configure(state=tk.DISABLED)
+            self.build_button.configure(state=tk.DISABLED)
+            return
+
+        current_index = min(self.current_profile_index, len(profile_names) - 1)
+        self.action_profile_combo.current(current_index)
+        self.action_profile_var.set(profile_names[current_index])
+        self.full_setup_button.configure(state=tk.NORMAL)
+        self.build_button.configure(state=tk.NORMAL)
+
+    def _on_action_profile_selected(self, event) -> None:
+        if not self.action_profile_combo:
+            return
+
+        selection = self.action_profile_var.get()
+        profile_names = list(self.action_profile_combo["values"])
+        if selection not in profile_names:
+            return
+
+        new_index = profile_names.index(selection)
+        if new_index == self.current_profile_index:
+            return
+
+        self._update_profile_from_vars()
+        self.current_profile_index = new_index
+        self._load_profile_into_vars()
+        self.profile_listbox.selection_clear(0, tk.END)
+        self.profile_listbox.selection_set(new_index)
+        self.profile_listbox.activate(new_index)
+
+    def _get_selected_action_profile_index(self) -> Optional[int]:
+        if not self.profiles:
+            return None
+
+        if self.action_profile_combo is not None:
+            combo_index = self.action_profile_combo.current()
+            if combo_index is not None and combo_index >= 0:
+                return combo_index
+
+        if 0 <= self.current_profile_index < len(self.profiles):
+            return self.current_profile_index
+
+        return 0
+
     # ------------------------------------------------------------------
     # Profile handling
     # ------------------------------------------------------------------
@@ -633,11 +693,31 @@ class App(tk.Tk):
             messagebox.showerror("Missing script", f"ไม่พบไฟล์ {script_name}")
             return
 
-        self._append_log(f"\n>>> เริ่มรัน {friendly_name}\n")
+        profile_index = self._get_selected_action_profile_index()
+        if profile_index is None:
+            messagebox.showerror("No profile", "กรุณาเลือกโปรไฟล์ก่อนรันสคริปต์")
+            return
+
+        selected_profile = self.profiles[profile_index]
+        profile_name = selected_profile.get("ProfileName", "").strip()
+        display_name = profile_name or f"Profile {profile_index + 1}"
+
+        self._append_log(f"\n>>> เริ่มรัน {friendly_name} สำหรับโปรไฟล์ {display_name}\n")
         self._set_action_buttons_state(tk.DISABLED)
 
         def worker() -> None:
-            cmd = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+            cmd = [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-ProfileIndex",
+                str(profile_index + 1),
+            ]
+            if profile_name:
+                cmd.extend(["-ProfileName", profile_name])
             process = subprocess.Popen(
                 cmd,
                 cwd=str(BASE_DIR),
