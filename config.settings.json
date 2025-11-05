@@ -19,7 +19,7 @@
     "ClientCertLifetimeDays": 9999
   },
   "Firewall": {
-    "VpnListenPort": "1194",
+    "VpnListenPort": "1198",
     "VpnProto": "udp4"
   }
 }

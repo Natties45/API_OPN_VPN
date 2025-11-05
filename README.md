@@ -64,3 +64,49 @@
 
 GUI จะบันทึกการเปลี่ยนแปลงลงไฟล์ JSON เดิม ทำให้ทำงานร่วมกับสคริปต์ PowerShell ได้เต็มรูปแบบเหมือนใช้ผ่าน CLI ครับ
 
+
+## Profiles & Users (GUI)
+
+The GUI now keeps a single configuration file `config.gui.json` that contains the active profile id together with the full list of profiles. Each profile owns its API/SSH connection data, automation settings, and users. A simplified example of the schema is shown below:
+
+```json
+{
+  "active_profile_id": "default",
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Default",
+      "settings": {
+        "connection": {
+          "ApiBaseUrl": "https://firewall.example.com:4443",
+          "ApiKey": "...",
+          "ApiSecret": "...",
+          "SshHost": "firewall.example.com",
+          "SshUser": "root",
+          "SshPass": ""
+        },
+        "automation": {
+          "GroupName": "vpn-users",
+          "VpnTunnelNetwork": "10.99.0.0/24",
+          "Firewall": {
+            "VpnListenPort": "1194",
+            "VpnProto": "udp4"
+          }
+        }
+      },
+      "users": [
+        {
+          "username": "alice",
+          "password": "***",
+          "full_name": "Alice (VPN User)",
+          "email": "alice@example.com"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Selecting a profile in the GUI automatically makes it the active profile, so the drop-down on the Actions tab and the legacy export stay in sync.
+
+When the PowerShell scripts are launched from the GUI, the manager exports legacy files (`config.profiles.json`, `config.settings.json`, `config.users.json`) for the selected profile so existing automation continues to work unchanged.

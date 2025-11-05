@@ -11,12 +11,6 @@
       "Password": "mis@Pass01",
       "Full": "Bob (VPN User)",
       "Email": "bob@example.com"
-    },
-    {
-      "Name": "user3",
-      "Password": "mis@Pass01",
-      "Full": "New VPN User",
-      "Email": "user@example.com"
     }
   ]
 }

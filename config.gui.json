@@ -1,0 +1,58 @@
+{
+  "active_profile_id": "30927d34d04f4ea2b44cb2968750d593",
+  "profiles": [
+    {
+      "id": "30927d34d04f4ea2b44cb2968750d593",
+      "name": "OPNsense-Site-A",
+      "settings": {
+        "connection": {
+          "ApiBaseUrl": "https://103.138.178.72:4443",
+          "ApiKey": "CSlhiimhqQCrpdSvFbcdOxmemTJRvgcUOmK/YdBdrgTpR8ulYFAwJFfVLmO3rAr7Jk5VPSefA/vRtAzt",
+          "ApiSecret": "iESOtCO5H7LBDdj9LNDDKIIRCwB7r+p5qBD4el8XP7d806mqRXSJcUpFTsXXn12UiOetFqkrxP9UEoTC",
+          "SshHost": "103.138.178.72",
+          "SshUser": "root",
+          "SshPass": "opnsense"
+        },
+        "automation": {
+          "GroupName": "vpn-users",
+          "GroupDesc": "VPN users (auto-generated)",
+          "VpnTunnelNetwork": "10.99.0.0/24",
+          "VpnLocalNetwork": "192.168.1.0/24",
+          "StaticKeyMode": "tls-crypt",
+          "VpnDevType": "tun",
+          "VpnTopology": "subnet",
+          "InterfaceDesc": "VPN_TUNNEL_AUTO",
+          "NamePatterns": {
+            "CaPrefix": "AutoCA_VPN",
+            "ServerCn": "AutoVPN_Gateway",
+            "StaticKeyPrefix": "AutoTLSKey",
+            "InstancePrefix": "AutoVPN_Server"
+          },
+          "Lifetimes": {
+            "CALifetimeDays": 9999,
+            "ServerCertLifetimeDays": 9999,
+            "ClientCertLifetimeDays": 9999
+          },
+          "Firewall": {
+            "VpnListenPort": "1198",
+            "VpnProto": "udp4"
+          }
+        }
+      },
+      "users": [
+        {
+          "username": "alice",
+          "password": "mis@Pass01",
+          "full_name": "Alice (VPN User)",
+          "email": "alice@example.com"
+        },
+        {
+          "username": "bob",
+          "password": "mis@Pass01",
+          "full_name": "Bob (VPN User)",
+          "email": "bob@example.com"
+        }
+      ]
+    }
+  ]
+}
