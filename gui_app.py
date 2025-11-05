@@ -181,6 +181,9 @@ class App(tk.Tk):
             "Email": tk.StringVar(),
         }
 
+        self.action_profile_var = tk.StringVar()
+        self.action_profile_combo: Optional[ttk.Combobox] = None
+
         self._build_layout()
         self._load_profile_into_vars()
         self._load_settings_into_vars()
@@ -347,7 +350,7 @@ class App(tk.Tk):
     def _build_actions_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
         action_frame = ttk.Frame(frame)
-        action_frame.grid(row=0, column=0, sticky=tk.W)
+        action_frame.grid(row=0, column=0, sticky="ew")
 
         self.save_button = ttk.Button(action_frame, text="Save Config Files", command=self._save_all)
         self.save_button.grid(row=0, column=0, padx=5, pady=5)
@@ -362,9 +365,26 @@ class App(tk.Tk):
         )
         self.build_button.grid(row=0, column=2, padx=5, pady=5)
 
+        profile_select_frame = ttk.Frame(frame)
+        profile_select_frame.grid(row=1, column=0, sticky="ew", padx=(0, 5))
+        profile_select_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(profile_select_frame, text="Profile for scripts:").grid(
+            row=0, column=0, sticky=tk.W, padx=5, pady=(0, 5)
+        )
+        self.action_profile_combo = ttk.Combobox(
+            profile_select_frame,
+            textvariable=self.action_profile_var,
+            state="readonly",
+        )
+        self.action_profile_combo.grid(row=0, column=1, sticky="ew", pady=(0, 5))
+        self.action_profile_combo.bind("<<ComboboxSelected>>", self._on_action_profile_selected)
+
         self.log_text = scrolledtext.ScrolledText(frame, height=25, state=tk.DISABLED)
-        self.log_text.grid(row=1, column=0, sticky="nsew", padx=(0, 5), pady=(10, 0))
-        frame.rowconfigure(1, weight=1)
+        self.log_text.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=(10, 0))
+        frame.rowconfigure(2, weight=1)
+
+        self._refresh_action_profile_selector()
 
     # ------------------------------------------------------------------
     # Profile handling
@@ -378,6 +398,7 @@ class App(tk.Tk):
             self.profile_listbox.selection_clear(0, tk.END)
             self.profile_listbox.selection_set(index)
             self.profile_listbox.activate(index)
+        self._refresh_action_profile_selector()
 
     def _on_profile_selected(self, event) -> None:
         if not self.profile_listbox.curselection():

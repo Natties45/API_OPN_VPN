@@ -1,0 +1,1 @@
+# No additional pip packages required; GUI uses tkinter from the Python standard library

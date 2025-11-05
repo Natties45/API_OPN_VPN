@@ -1,3 +1,8 @@
+param(
+    [int]$ProfileIndex,
+    [string]$ProfileName
+)
+
 # ====================================================================
 # Build-Ovpn-Files.ps1
 #
@@ -13,15 +18,40 @@ $ProfileConfigPath = (Join-Path $PSScriptRoot "config.profiles.json")
 if (-not (Test-Path $ProfileConfigPath)) { throw "File not found: config.profiles.json" }
 $ProfileConfig = Get-Content -Raw -Path $ProfileConfigPath | ConvertFrom-Json
 
+$profileCount = $ProfileConfig.profiles.Count
+if ($profileCount -lt 1) { throw "No profiles defined in config.profiles.json." }
+
+$choice = $null
+if ($PSBoundParameters.ContainsKey('ProfileName') -and $ProfileName) {
+    for ($i = 0; $i -lt $profileCount; $i++) {
+        if ($ProfileConfig.profiles[$i].ProfileName -ieq $ProfileName) {
+            $choice = $i + 1
+            break
+        }
+    }
+    if (-not $choice) {
+        throw "Profile '$ProfileName' was not found in config.profiles.json."
+    }
+}
+if (-not $choice -and $PSBoundParameters.ContainsKey('ProfileIndex')) {
+    if ($ProfileIndex -lt 1 -or $ProfileIndex -gt $profileCount) {
+        throw "ProfileIndex must be between 1 and $profileCount."
+    }
+    $choice = [int]$ProfileIndex
+}
 Write-Host "--- Please Select Profile to Build OVPNs for ---" -ForegroundColor Cyan
-for ($i = 0; $i -lt $ProfileConfig.profiles.Count; $i++) {
+for ($i = 0; $i -lt $profileCount; $i++) {
     Write-Host (" [{0}] {1}" -f ($i+1), $ProfileConfig.profiles[$i].ProfileName)
 }
-$choice = $null
-while ($choice -lt 1 -or $choice -gt $ProfileConfig.profiles.Count) {
-    try { $choice = [int](Read-Host "Enter number (1-$($ProfileConfig.profiles.Count))") } catch {}
-}
 
+if (-not $choice) {
+    while ($choice -lt 1 -or $choice -gt $profileCount) {
+        try { $choice = [int](Read-Host "Enter number (1-$profileCount)") } catch {}
+    }
+} else {
+    $autoProfile = $ProfileConfig.profiles[$choice - 1]
+    Write-Host ("Auto-selecting profile [{0}] {1}" -f $choice, $autoProfile.ProfileName) -ForegroundColor Green
+}
 # --- 2. Set Paths ---
 $SelectedProfile = $ProfileConfig.profiles[$choice - 1]
 $SettingsConfigPath = (Join-Path $PSScriptRoot "config.settings.json")
@@ -118,3 +148,4 @@ Write-Host "========================================================" -Foregroun
 Write-Host "✅ OVPN Build Complete."
 Write-Host "  Files saved in: $OvpnOutputPath"
 Write-Host "========================================================" -ForegroundColor Cyan
+

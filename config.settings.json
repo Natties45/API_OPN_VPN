@@ -1,29 +1,23 @@
 {
   "GroupName": "vpn-users",
   "GroupDesc": "VPN users (auto-generated)",
-  
   "VpnTunnelNetwork": "10.99.0.0/24",
   "VpnLocalNetwork": "192.168.1.0/24",
-
   "StaticKeyMode": "tls-crypt",
   "VpnDevType": "tun",
   "VpnTopology": "subnet",
-
   "InterfaceDesc": "VPN_TUNNEL_AUTO",
-
   "NamePatterns": {
     "CaPrefix": "AutoCA_VPN",
     "ServerCn": "AutoVPN_Gateway",
     "StaticKeyPrefix": "AutoTLSKey",
     "InstancePrefix": "AutoVPN_Server"
   },
-  
   "Lifetimes": {
-     "CALifetimeDays": 9999,
-     "ServerCertLifetimeDays": 9999,
-     "ClientCertLifetimeDays": 9999
+    "CALifetimeDays": 9999,
+    "ServerCertLifetimeDays": 9999,
+    "ClientCertLifetimeDays": 9999
   },
-
   "Firewall": {
     "VpnListenPort": "1194",
     "VpnProto": "udp4"
