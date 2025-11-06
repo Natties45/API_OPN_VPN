@@ -1,6 +1,5 @@
 {
-  "active_profile_id": "30927d34d04f4ea2b44cb2968750d593",
-  "profiles": [
+  "opnsense_profiles": [
     {
       "id": "30927d34d04f4ea2b44cb2968750d593",
       "name": "OPNsense-Site-A",
@@ -38,7 +37,13 @@
             "VpnProto": "udp4"
           }
         }
-      },
+      }
+    }
+  ],
+  "user_profiles": [
+    {
+      "id": "040eb8efc9fc474286ed960003aeaab8",
+      "name": "userA",
       "users": [
         {
           "username": "alice",
@@ -51,8 +56,40 @@
           "password": "mis@Pass01",
           "full_name": "Bob (VPN User)",
           "email": "bob@example.com"
+        },
+        {
+          "username": "bob-copy",
+          "password": "mis@Pass01",
+          "full_name": "Bob (VPN User)",
+          "email": "bob@example.com"
+        }
+      ]
+    },
+    {
+      "id": "c9b95b6efb1b4e34afe7d345e10e59f0",
+      "name": "userbb",
+      "users": [
+        {
+          "username": "alice",
+          "password": "mis@Pass01",
+          "full_name": "Alice (VPN User)",
+          "email": "alice@example.com"
+        },
+        {
+          "username": "bob",
+          "password": "mis@Pass01",
+          "full_name": "Bob (VPN User)",
+          "email": "bob@example.com"
+        },
+        {
+          "username": "tewsttt",
+          "password": "mis@Pass01",
+          "full_name": "Bob (VPN User)",
+          "email": "bob@example.com"
         }
       ]
     }
-  ]
+  ],
+  "selected_opnsense_profile_id": "30927d34d04f4ea2b44cb2968750d593",
+  "selected_user_profile_id": "040eb8efc9fc474286ed960003aeaab8"
 }
