@@ -1,0 +1,11 @@
+* text=auto
+
+# โค้ดข้ามแพลตฟอร์ม → เก็บใน repo เป็น LF
+*.py   text eol=lf
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# สคริปต์ Windows → ทำงานสบายบน Windows (CRLF ใน working copy)
+*.ps1  text eol=crlf
+*.bat  text eol=crlf

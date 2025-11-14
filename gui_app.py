@@ -1,159 +1,82 @@
+
 #!/usr/bin/env python3
 """Tkinter GUI wrapper for the OPNsense OpenVPN automation scripts.
 
-This lightweight desktop application lets administrators edit the
-configuration JSON files and execute the existing PowerShell automation
-without having to touch the command line.  The intent is to keep the
-configuration model identical to the PowerShell workflow, so the GUI only
-provides convenience around those JSON files.
+This version provides multi-profile management where each profile owns its
+settings and users.  The GUI keeps the PowerShell automation compatible by
+exporting legacy JSON files whenever actions run.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 import sys
 import threading
+from copy import deepcopy
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, simpledialog, ttk
+
+from models import (
+    ConfigManager,
+    DEFAULT_AUTOMATION,
+    DEFAULT_CONNECTION,
+    DEFAULT_USER_TEMPLATE,
+    OPNsenseProfile,
+    User,
+    UserProfile,
+    make_unique_username,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 
-CONFIG_PROFILE_PATH = BASE_DIR / "config.profiles.json"
-CONFIG_SETTINGS_PATH = BASE_DIR / "config.settings.json"
-CONFIG_USERS_PATH = BASE_DIR / "config.users.json"
 
-DEFAULT_PROFILE = {
-    "ProfileName": "New Profile",
-    "ApiBaseUrl": "https://firewall.example.com:4443",
-    "ApiKey": "",
-    "ApiSecret": "",
-    "SshHost": "firewall.example.com",
-    "SshUser": "root",
-    "SshPass": "",
-}
+class AppState:
+    """Holds current selections and notifies listeners when they change."""
 
-DEFAULT_SETTINGS = {
-    "GroupName": "vpn-users",
-    "GroupDesc": "VPN users (auto-generated)",
-    "VpnTunnelNetwork": "10.99.0.0/24",
-    "VpnLocalNetwork": "192.168.1.0/24",
-    "StaticKeyMode": "tls-crypt",
-    "VpnDevType": "tun",
-    "VpnTopology": "subnet",
-    "InterfaceDesc": "VPN_TUNNEL_AUTO",
-    "NamePatterns": {
-        "CaPrefix": "AutoCA_VPN",
-        "ServerCn": "AutoVPN_Gateway",
-        "StaticKeyPrefix": "AutoTLSKey",
-        "InstancePrefix": "AutoVPN_Server",
-    },
-    "Lifetimes": {
-        "CALifetimeDays": 3650,
-        "ServerCertLifetimeDays": 3650,
-        "ClientCertLifetimeDays": 3650,
-    },
-    "Firewall": {
-        "VpnListenPort": "1194",
-        "VpnProto": "udp4",
-    },
-}
-
-DEFAULT_USER = {
-    "Name": "newuser",
-    "Password": "changeme",
-    "Full": "New VPN User",
-    "Email": "user@example.com",
-}
-
-
-class ConfigStore:
-    """Helper that loads and saves JSON config files."""
-
-    def __init__(self) -> None:
-        self.profile_path = CONFIG_PROFILE_PATH
-        self.settings_path = CONFIG_SETTINGS_PATH
-        self.users_path = CONFIG_USERS_PATH
-
-    def load_profiles(self) -> List[Dict[str, str]]:
-        return self._load_json(self.profile_path, "profiles", default=[DEFAULT_PROFILE.copy()])
-
-    def save_profiles(self, profiles: List[Dict[str, str]]) -> None:
-        self._save_json(self.profile_path, {"profiles": profiles})
-
-    def load_settings(self) -> Dict[str, object]:
-        return self._load_json(self.settings_path, default=DEFAULT_SETTINGS.copy())
-
-    def save_settings(self, settings: Dict[str, object]) -> None:
-        self._save_json(self.settings_path, settings)
-
-    def load_users(self) -> List[Dict[str, str]]:
-        return self._load_json(self.users_path, "users", default=[])
-
-    def save_users(self, users: List[Dict[str, str]]) -> None:
-        self._save_json(self.users_path, {"users": users})
-
-    def _load_json(
+    def __init__(
         self,
-        path: Path,
-        key: Optional[str] = None,
-        default=None,
-    ):
-        if not path.exists():
-            return default if default is not None else {}
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except json.JSONDecodeError as exc:
-            messagebox.showerror(
-                "Invalid JSON",
-                f"ไม่สามารถอ่านไฟล์ {path.name} ได้\nรายละเอียด: {exc}",
-            )
-            return default if default is not None else {}
-        if key is None:
-            return data
-        return data.get(key, default if default is not None else [])
+        current_opnsense_profile_id: Optional[str] = None,
+        current_user_profile_id: Optional[str] = None,
+    ) -> None:
+        self.current_opnsense_profile_id = current_opnsense_profile_id
+        self.current_user_profile_id = current_user_profile_id
+        self.on_user_profile_changed: List[Callable[[Optional[str]], None]] = []
 
-    def _save_json(self, path: Path, data) -> None:
-        with path.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
+    def set_current_user_profile_id(self, profile_id: Optional[str]) -> bool:
+        if self.current_user_profile_id == profile_id:
+            return False
+        self.current_user_profile_id = profile_id
+        for callback in list(self.on_user_profile_changed):
+            callback(profile_id)
+        return True
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("OPNsense OpenVPN Setup GUI")
-        self.geometry("950x700")
+        self.geometry("1000x720")
 
-        self.store = ConfigStore()
+        self.manager = ConfigManager.load()
+        opnsense_profiles = self.manager.list_opnsense_profiles()
+        user_profiles = self.manager.list_user_profiles()
+        self.app_state = AppState(
+            current_opnsense_profile_id=self.manager.get_selected_opnsense_profile_id()
+            or (opnsense_profiles[0].id if opnsense_profiles else None),
+            current_user_profile_id=self.manager.get_selected_user_profile_id()
+            or (user_profiles[0].id if user_profiles else None),
+        )
 
-        self.profiles: List[Dict[str, str]] = self.store.load_profiles()
-        self.settings: Dict[str, object] = self.store.load_settings()
-        self.users: List[Dict[str, str]] = self.store.load_users()
+        self.current_user_username: Optional[str] = None
+        self._last_loaded_user: Optional[User] = None
 
-        if not self.profiles:
-            self.profiles = [DEFAULT_PROFILE.copy()]
-        if not self.users:
-            self.users = []
-
-        self.current_profile_index: int = 0
-        self.current_user_index: Optional[int] = 0 if self.users else None
-
-        self.profile_vars: Dict[str, tk.StringVar] = {
-            "ProfileName": tk.StringVar(),
-            "ApiBaseUrl": tk.StringVar(),
-            "ApiKey": tk.StringVar(),
-            "ApiSecret": tk.StringVar(),
-            "SshHost": tk.StringVar(),
-            "SshUser": tk.StringVar(),
-            "SshPass": tk.StringVar(),
+        self.connection_vars: Dict[str, tk.StringVar] = {
+            key: tk.StringVar() for key in DEFAULT_CONNECTION
         }
-
         self.settings_vars: Dict[Tuple[str, ...], tk.StringVar] = {
             ("GroupName",): tk.StringVar(),
             ("GroupDesc",): tk.StringVar(),
@@ -173,21 +96,64 @@ class App(tk.Tk):
             ("Firewall", "VpnListenPort"): tk.StringVar(),
             ("Firewall", "VpnProto"): tk.StringVar(),
         }
-
         self.user_vars: Dict[str, tk.StringVar] = {
-            "Name": tk.StringVar(),
-            "Password": tk.StringVar(),
-            "Full": tk.StringVar(),
-            "Email": tk.StringVar(),
+            "username": tk.StringVar(),
+            "password": tk.StringVar(),
+            "full_name": tk.StringVar(),
+            "email": tk.StringVar(),
         }
+        self.profile_name_var = tk.StringVar()
+        self.connection_entries: List[tk.Entry] = []
+        self.settings_entries: List[tk.Entry] = []
+        self.status_var = tk.StringVar(value="Ready")
+        self.user_profile_context_var = tk.StringVar(value="User Profile: (none)")
 
-        self.action_profile_var = tk.StringVar()
-        self.action_profile_combo: Optional[ttk.Combobox] = None
+        self.profile_listbox: Optional[tk.Listbox] = None
+        self.user_profile_listbox: Optional[tk.Listbox] = None
+        self.user_listbox: Optional[tk.Listbox] = None
+        self.action_opnsense_combo: Optional[ttk.Combobox] = None
+        self.action_user_profile_combo: Optional[ttk.Combobox] = None
+        self.full_setup_button: Optional[ttk.Button] = None
+        self.build_button: Optional[ttk.Button] = None
+        self.log_text: Optional[scrolledtext.ScrolledText] = None
+
+        self.btn_profile_new: Optional[ttk.Button] = None
+        self.btn_profile_rename: Optional[ttk.Button] = None
+        self.btn_profile_duplicate: Optional[ttk.Button] = None
+        self.btn_profile_delete: Optional[ttk.Button] = None
+
+        self.btn_user_profile_new: Optional[ttk.Button] = None
+        self.btn_user_profile_rename: Optional[ttk.Button] = None
+        self.btn_user_profile_duplicate: Optional[ttk.Button] = None
+        self.btn_user_profile_delete: Optional[ttk.Button] = None
+
+        self.users_btn_new: Optional[ttk.Button] = None
+        self.users_btn_duplicate: Optional[ttk.Button] = None
+        self.users_btn_delete: Optional[ttk.Button] = None
+        self.user_save_button: Optional[ttk.Button] = None
+        self.user_entries: List[tk.Entry] = []
+
+        self.actions_opnsense_var = tk.StringVar()
+        self.actions_user_profile_var = tk.StringVar()
+        self._action_opnsense_ids: List[str] = []
+        self._action_user_profile_ids: List[str] = []
+        self._actions_opnsense_profile_id: Optional[str] = self.app_state.current_opnsense_profile_id
+        self._actions_user_profile_id: Optional[str] = self.app_state.current_user_profile_id
+
+        self._in_opnsense_refresh = False
+        self._in_user_profile_refresh = False
+        self._in_user_refresh = False
+        self._in_action_refresh = False
 
         self._build_layout()
-        self._load_profile_into_vars()
-        self._load_settings_into_vars()
-        self._load_current_user_into_vars()
+        self.app_state.on_user_profile_changed.append(self._on_app_state_user_profile_changed)
+        self._register_manager_callbacks()
+
+        self._refresh_opnsense_profile_listbox()
+        self._load_selected_opnsense_profile()
+        self._refresh_action_opnsense_selector()
+        self._update_profile_buttons_state()
+        self._on_app_state_user_profile_changed(self.app_state.current_user_profile_id)
 
     # ------------------------------------------------------------------
     # Layout helpers
@@ -195,14 +161,13 @@ class App(tk.Tk):
     def _build_layout(self) -> None:
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        self.notebook = notebook
 
         profile_frame = ttk.Frame(notebook)
         settings_frame = ttk.Frame(notebook)
         users_frame = ttk.Frame(notebook)
         actions_frame = ttk.Frame(notebook)
 
-        notebook.add(profile_frame, text="Profiles")
+        notebook.add(profile_frame, text="OPNsense Profiles")
         notebook.add(settings_frame, text="Settings")
         notebook.add(users_frame, text="Users")
         notebook.add(actions_frame, text="Actions & Logs")
@@ -212,25 +177,42 @@ class App(tk.Tk):
         self._build_users_tab(users_frame)
         self._build_actions_tab(actions_frame)
 
+        status_frame = ttk.Frame(self)
+        status_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        ttk.Label(status_frame, textvariable=self.status_var).pack(anchor=tk.W)
     def _build_profile_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(1, weight=1)
 
         list_frame = ttk.Frame(frame)
         list_frame.grid(row=0, column=0, sticky="ns")
+        ttk.Label(list_frame, text="OPNsense Profiles").pack(anchor=tk.W)
 
-        ttk.Label(list_frame, text="Profiles").pack(anchor=tk.W)
-        self.profile_listbox = tk.Listbox(list_frame, height=12)
+        self.profile_listbox = tk.Listbox(list_frame, height=14)
         self.profile_listbox.pack(fill=tk.Y, expand=True)
-        self.profile_listbox.bind("<<ListboxSelect>>", self._on_profile_selected)
-        self._refresh_profile_listbox()
+        self.profile_listbox.bind("<<ListboxSelect>>", self._on_opnsense_profile_selected)
 
         btn_frame = ttk.Frame(list_frame)
-        btn_frame.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(btn_frame, text="New", command=self._create_profile).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="Delete", command=self._delete_profile).pack(side=tk.LEFT, padx=2)
+        btn_frame.pack(fill=tk.X, pady=(6, 0))
+        self.btn_profile_new = ttk.Button(btn_frame, text="New Profile", command=self._create_profile)
+        self.btn_profile_new.pack(side=tk.TOP, fill=tk.X, pady=2)
+        self.btn_profile_rename = ttk.Button(btn_frame, text="Rename", command=self._rename_profile)
+        self.btn_profile_rename.pack(side=tk.TOP, fill=tk.X, pady=2)
+        self.btn_profile_duplicate = ttk.Button(
+            btn_frame, text="Duplicate", command=self._duplicate_profile
+        )
+        self.btn_profile_duplicate.pack(side=tk.TOP, fill=tk.X, pady=2)
+        self.btn_profile_delete = ttk.Button(btn_frame, text="Delete", command=self._delete_profile)
+        self.btn_profile_delete.pack(side=tk.TOP, fill=tk.X, pady=2)
 
-        fields = (
-            ("Profile Name", "ProfileName"),
+        field_frame = ttk.Frame(frame)
+        field_frame.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
+        field_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(field_frame, textvariable=self.profile_name_var, font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 8)
+        )
+
+        connection_fields = (
             ("API Base URL", "ApiBaseUrl"),
             ("API Key", "ApiKey"),
             ("API Secret", "ApiSecret"),
@@ -239,405 +221,1032 @@ class App(tk.Tk):
             ("SSH Password", "SshPass"),
         )
 
-        field_frame = ttk.Frame(frame)
-        field_frame.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
-        field_frame.columnconfigure(1, weight=1)
-
-        for idx, (label, key) in enumerate(fields):
+        for idx, (label, key) in enumerate(connection_fields, start=1):
             ttk.Label(field_frame, text=label).grid(row=idx, column=0, sticky=tk.W, pady=2)
-            entry = ttk.Entry(field_frame, textvariable=self.profile_vars[key])
+            entry = ttk.Entry(field_frame, textvariable=self.connection_vars[key])
             entry.grid(row=idx, column=1, sticky="ew", pady=2)
             if key in {"ApiSecret", "SshPass"}:
                 entry.configure(show="*")
+            self.connection_entries.append(entry)
 
-        ttk.Button(field_frame, text="Save Profile", command=self._save_current_profile).grid(
-            row=len(fields), column=1, sticky=tk.E, pady=(10, 0)
+        ttk.Button(field_frame, text="Save Connection", command=self._save_connection).grid(
+            row=len(connection_fields) + 1, column=1, sticky=tk.E, pady=(12, 0)
         )
 
     def _build_settings_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(1, weight=1)
 
-        general_fields = [
-            ("Group Name", ("GroupName",)),
-            ("Group Description", ("GroupDesc",)),
-            ("VPN Tunnel Network", ("VpnTunnelNetwork",)),
-            ("VPN Local Network", ("VpnLocalNetwork",)),
-            ("Static Key Mode", ("StaticKeyMode",)),
-            ("Device Type", ("VpnDevType",)),
-            ("Topology", ("VpnTopology",)),
-            ("Interface Description", ("InterfaceDesc",)),
+        sections = [
+            (
+                "General",
+                [
+                    ("Group Name", ("GroupName",)),
+                    ("Group Description", ("GroupDesc",)),
+                    ("VPN Tunnel Network", ("VpnTunnelNetwork",)),
+                    ("VPN Local Network", ("VpnLocalNetwork",)),
+                    ("Static Key Mode", ("StaticKeyMode",)),
+                    ("Device Type", ("VpnDevType",)),
+                    ("Topology", ("VpnTopology",)),
+                    ("Interface Description", ("InterfaceDesc",)),
+                ],
+            ),
+            (
+                "Name Patterns",
+                [
+                    ("CA Prefix", ("NamePatterns", "CaPrefix")),
+                    ("Server CN", ("NamePatterns", "ServerCn")),
+                    ("Static Key Prefix", ("NamePatterns", "StaticKeyPrefix")),
+                    ("Instance Prefix", ("NamePatterns", "InstancePrefix")),
+                ],
+            ),
+            (
+                "Lifetimes",
+                [
+                    ("CA Lifetime (days)", ("Lifetimes", "CALifetimeDays")),
+                    ("Server Cert Lifetime (days)", ("Lifetimes", "ServerCertLifetimeDays")),
+                    ("Client Cert Lifetime (days)", ("Lifetimes", "ClientCertLifetimeDays")),
+                ],
+            ),
+            (
+                "Firewall",
+                [
+                    ("Listen Port", ("Firewall", "VpnListenPort")),
+                    ("Protocol", ("Firewall", "VpnProto")),
+                ],
+            ),
         ]
 
-        patterns_fields = [
-            ("CA Prefix", ("NamePatterns", "CaPrefix")),
-            ("Server CN", ("NamePatterns", "ServerCn")),
-            ("Static Key Prefix", ("NamePatterns", "StaticKeyPrefix")),
-            ("Instance Prefix", ("NamePatterns", "InstancePrefix")),
-        ]
-
-        lifetime_fields = [
-            ("CA Lifetime (days)", ("Lifetimes", "CALifetimeDays")),
-            ("Server Cert Lifetime (days)", ("Lifetimes", "ServerCertLifetimeDays")),
-            ("Client Cert Lifetime (days)", ("Lifetimes", "ClientCertLifetimeDays")),
-        ]
-
-        firewall_fields = [
-            ("Listen Port", ("Firewall", "VpnListenPort")),
-            ("Protocol", ("Firewall", "VpnProto")),
-        ]
-
-        def build_section(start_row: int, title: str, fields_data) -> int:
+        current_row = 0
+        for title, items in sections:
             ttk.Label(frame, text=title, font=("Segoe UI", 10, "bold")).grid(
-                row=start_row, column=0, columnspan=2, sticky=tk.W, pady=(10, 0)
+                row=current_row, column=0, columnspan=2, sticky=tk.W, pady=(10 if current_row else 0, 0)
             )
-            row = start_row + 1
-            for label, key in fields_data:
-                ttk.Label(frame, text=label).grid(row=row, column=0, sticky=tk.W, pady=2)
-                ttk.Entry(frame, textvariable=self.settings_vars[key]).grid(
-                    row=row, column=1, sticky="ew", pady=2
-                )
-                row += 1
-            return row
-
-        next_row = build_section(0, "General", general_fields)
-        next_row = build_section(next_row, "Name Patterns", patterns_fields)
-        next_row = build_section(next_row, "Lifetimes", lifetime_fields)
-        next_row = build_section(next_row, "Firewall", firewall_fields)
+            current_row += 1
+            for label, key in items:
+                ttk.Label(frame, text=label).grid(row=current_row, column=0, sticky=tk.W, pady=2)
+                entry = ttk.Entry(frame, textvariable=self.settings_vars[key])
+                entry.grid(row=current_row, column=1, sticky="ew", pady=2)
+                self.settings_entries.append(entry)
+                current_row += 1
 
         ttk.Button(frame, text="Save Settings", command=self._save_settings).grid(
-            row=next_row, column=1, sticky=tk.E, pady=(10, 0)
+            row=current_row, column=1, sticky=tk.E, pady=(12, 0)
         )
 
     def _build_users_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(0, weight=1)
 
-        list_frame = ttk.Frame(frame)
-        list_frame.grid(row=0, column=0, sticky="ns")
+        left_container = ttk.Frame(frame)
+        left_container.grid(row=0, column=0, sticky="ns")
+        left_container.columnconfigure(0, weight=1)
 
-        ttk.Label(list_frame, text="Users").pack(anchor=tk.W)
-        self.user_listbox = tk.Listbox(list_frame, height=14)
-        self.user_listbox.pack(fill=tk.Y, expand=True)
-        self.user_listbox.bind("<<ListboxSelect>>", self._on_user_selected)
-        self._refresh_user_listbox()
+        profile_frame = ttk.Frame(left_container)
+        profile_frame.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(profile_frame, text="User Profiles").pack(anchor=tk.W)
 
-        btn_frame = ttk.Frame(list_frame)
-        btn_frame.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(btn_frame, text="New", command=self._create_user).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="Delete", command=self._delete_user).pack(side=tk.LEFT, padx=2)
+        self.user_profile_listbox = tk.Listbox(profile_frame, height=8)
+        self.user_profile_listbox.pack(fill=tk.BOTH, expand=True)
+        self.user_profile_listbox.bind("<<ListboxSelect>>", self._on_user_profile_selected)
 
-        fields = (
-            ("Username", "Name"),
-            ("Password", "Password"),
-            ("Full Name", "Full"),
-            ("Email", "Email"),
+        profile_btn_frame = ttk.Frame(profile_frame)
+        profile_btn_frame.pack(fill=tk.X, pady=(6, 12))
+        self.btn_user_profile_new = ttk.Button(
+            profile_btn_frame, text="New User Profile", command=self._create_user_profile
         )
+        self.btn_user_profile_new.pack(fill=tk.X, pady=2)
+        self.btn_user_profile_rename = ttk.Button(
+            profile_btn_frame, text="Rename", command=self._rename_user_profile
+        )
+        self.btn_user_profile_rename.pack(fill=tk.X, pady=2)
+        self.btn_user_profile_duplicate = ttk.Button(
+            profile_btn_frame, text="Duplicate", command=self._duplicate_user_profile
+        )
+        self.btn_user_profile_duplicate.pack(fill=tk.X, pady=2)
+        self.btn_user_profile_delete = ttk.Button(
+            profile_btn_frame, text="Delete", command=self._delete_user_profile
+        )
+        self.btn_user_profile_delete.pack(fill=tk.X, pady=2)
+
+        users_frame = ttk.Frame(left_container)
+        users_frame.grid(row=1, column=0, sticky="nsew")
+        ttk.Label(users_frame, text="Users").pack(anchor=tk.W)
+
+        self.user_listbox = tk.Listbox(users_frame, height=10)
+        self.user_listbox.pack(fill=tk.BOTH, expand=True)
+        self.user_listbox.bind("<<ListboxSelect>>", self._on_user_selected)
+
+        users_btn_frame = ttk.Frame(users_frame)
+        users_btn_frame.pack(fill=tk.X, pady=(6, 0))
+        self.users_btn_new = ttk.Button(users_btn_frame, text="New", command=self._new_user)
+        self.users_btn_new.pack(side=tk.LEFT, padx=2)
+        self.users_btn_duplicate = ttk.Button(
+            users_btn_frame, text="Duplicate", command=self._duplicate_user
+        )
+        self.users_btn_duplicate.pack(side=tk.LEFT, padx=2)
+        self.users_btn_delete = ttk.Button(
+            users_btn_frame, text="Delete", command=self._delete_user
+        )
+        self.users_btn_delete.pack(side=tk.LEFT, padx=2)
 
         field_frame = ttk.Frame(frame)
         field_frame.grid(row=0, column=1, sticky="nsew", padx=(15, 0))
         field_frame.columnconfigure(1, weight=1)
 
-        for idx, (label, key) in enumerate(fields):
+        ttk.Label(
+            field_frame,
+            textvariable=self.user_profile_context_var,
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 10))
+
+        user_fields = (
+            ("Username", "username"),
+            ("Password", "password"),
+            ("Full Name", "full_name"),
+            ("Email", "email"),
+        )
+
+        self.user_entries = []
+        for idx, (label, key) in enumerate(user_fields, start=1):
             ttk.Label(field_frame, text=label).grid(row=idx, column=0, sticky=tk.W, pady=2)
             entry = ttk.Entry(field_frame, textvariable=self.user_vars[key])
             entry.grid(row=idx, column=1, sticky="ew", pady=2)
-            if key == "Password":
+            if key == "password":
                 entry.configure(show="*")
+            self.user_entries.append(entry)
 
-        ttk.Button(field_frame, text="Save User", command=self._save_current_user).grid(
-            row=len(fields), column=1, sticky=tk.E, pady=(10, 0)
-        )
+        self.user_save_button = ttk.Button(field_frame, text="Save User", command=self._save_user)
+        self.user_save_button.grid(row=len(user_fields) + 1, column=1, sticky=tk.E, pady=(12, 0))
 
     def _build_actions_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
-        action_frame = ttk.Frame(frame)
-        action_frame.grid(row=0, column=0, sticky="ew")
 
-        self.save_button = ttk.Button(action_frame, text="Save Config Files", command=self._save_all)
-        self.save_button.grid(row=0, column=0, padx=5, pady=5)
+        action_frame = ttk.Frame(frame)
+        action_frame.grid(row=0, column=0, sticky=tk.E)
 
         self.full_setup_button = ttk.Button(
             action_frame, text="Run Full Setup", command=self._run_full_setup
         )
-        self.full_setup_button.grid(row=0, column=1, padx=5, pady=5)
+        self.full_setup_button.grid(row=0, column=0, padx=5, pady=5)
 
         self.build_button = ttk.Button(
             action_frame, text="Build OVPN Files", command=self._run_build_ovpn
         )
-        self.build_button.grid(row=0, column=2, padx=5, pady=5)
+        self.build_button.grid(row=0, column=1, padx=5, pady=5)
 
-        profile_select_frame = ttk.Frame(frame)
-        profile_select_frame.grid(row=1, column=0, sticky="ew", padx=(0, 5))
-        profile_select_frame.columnconfigure(1, weight=1)
+        select_frame = ttk.Frame(frame)
+        select_frame.grid(row=1, column=0, sticky="ew", padx=5)
+        select_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(profile_select_frame, text="Profile for scripts:").grid(
-            row=0, column=0, sticky=tk.W, padx=5, pady=(0, 5)
+        ttk.Label(select_frame, text="OPNsense Profile:").grid(row=0, column=0, sticky=tk.W)
+        self.action_opnsense_combo = ttk.Combobox(
+            select_frame, textvariable=self.actions_opnsense_var, state="readonly"
         )
-        self.action_profile_combo = ttk.Combobox(
-            profile_select_frame,
-            textvariable=self.action_profile_var,
-            state="readonly",
-        )
-        self.action_profile_combo.grid(row=0, column=1, sticky="ew", pady=(0, 5))
-        self.action_profile_combo.bind("<<ComboboxSelected>>", self._on_action_profile_selected)
+        self.action_opnsense_combo.grid(row=0, column=1, sticky="ew")
+        self.action_opnsense_combo.bind("<<ComboboxSelected>>", self._on_action_opnsense_selected)
 
-        self.log_text = scrolledtext.ScrolledText(frame, height=25, state=tk.DISABLED)
-        self.log_text.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=(10, 0))
+        ttk.Label(select_frame, text="User Profile:").grid(row=1, column=0, sticky=tk.W, pady=(6, 0))
+        self.action_user_profile_combo = ttk.Combobox(
+            select_frame, textvariable=self.actions_user_profile_var, state="readonly"
+        )
+        self.action_user_profile_combo.grid(row=1, column=1, sticky="ew", pady=(6, 0))
+        self.action_user_profile_combo.bind("<<ComboboxSelected>>", self._on_action_user_profile_selected)
+
+        self.log_text = scrolledtext.ScrolledText(frame, height=24, state=tk.DISABLED)
+        self.log_text.grid(row=2, column=0, sticky="nsew", padx=5, pady=(10, 0))
         frame.rowconfigure(2, weight=1)
+    # ------------------------------------------------------------------
+    # Manager event wiring
+    # ------------------------------------------------------------------
+    def _register_manager_callbacks(self) -> None:
+        self.manager.register_listener("opnsense_profiles_changed", self._on_opnsense_profiles_changed)
+        self.manager.register_listener("user_profiles_changed", self._on_user_profiles_changed)
+        self.manager.register_listener("user_list_changed", self._on_user_list_changed)
+        self.manager.register_listener("selection_changed", self._on_selection_changed)
 
-        self._refresh_action_profile_selector()
+    def _on_opnsense_profiles_changed(self) -> None:
+        profiles = self.manager.list_opnsense_profiles()
+        selected_id = self.manager.get_selected_opnsense_profile_id()
+        if selected_id is None and profiles:
+            selected_id = profiles[0].id
+            self.manager.set_selected_opnsense_profile_id(selected_id)
+        self.app_state.current_opnsense_profile_id = selected_id
+        self._refresh_opnsense_profile_listbox()
+        self._load_selected_opnsense_profile()
+        self._refresh_action_opnsense_selector()
+        self._update_profile_buttons_state()
+        self._update_action_buttons_state()
+
+    def _on_user_profiles_changed(self) -> None:
+        profiles = self.manager.list_user_profiles()
+        selected_id = self.manager.get_selected_user_profile_id()
+        if selected_id is None and profiles:
+            selected_id = profiles[0].id
+            self.manager.set_selected_user_profile_id(selected_id)
+        changed = self.app_state.set_current_user_profile_id(selected_id)
+        if not changed:
+            self._on_app_state_user_profile_changed(selected_id)
+
+    def _on_user_list_changed(self) -> None:
+        self._refresh_users_for_current_profile()
+        self._update_user_controls_state()
+
+    def _on_selection_changed(self) -> None:
+        current_opnsense_id = self.manager.get_selected_opnsense_profile_id()
+        if current_opnsense_id != self.app_state.current_opnsense_profile_id:
+            self.app_state.current_opnsense_profile_id = current_opnsense_id
+            self._refresh_opnsense_profile_listbox()
+            self._load_selected_opnsense_profile()
+            self._refresh_action_opnsense_selector()
+            self._update_profile_buttons_state()
+
+        current_user_profile_id = self.manager.get_selected_user_profile_id()
+        if current_user_profile_id != self.app_state.current_user_profile_id:
+            self.app_state.set_current_user_profile_id(current_user_profile_id)
+
+        self._update_action_buttons_state()
+
+    def _on_app_state_user_profile_changed(self, profile_id: Optional[str]) -> None:
+        label = "User Profile: (none)"
+        if profile_id:
+            try:
+                profile = self.manager.get_user_profile(profile_id)
+            except ValueError:
+                label = "User Profile: (missing)"
+            else:
+                label = f"User Profile: {profile.name}"
+        self.user_profile_context_var.set(label)
+        self._refresh_user_profile_listbox()
+        self._refresh_users_for_current_profile()
+        self._refresh_action_user_profile_selector()
+        self._update_user_profile_buttons_state()
+        self._update_user_controls_state()
+        self._update_action_buttons_state()
+
+
+    def _refresh_opnsense_profile_listbox(self) -> None:
+        if not self.profile_listbox:
+            return
+        profiles = self.manager.list_opnsense_profiles()
+        selected_id = self.app_state.current_opnsense_profile_id
+
+        self._in_opnsense_refresh = True
+        try:
+            self.profile_listbox.delete(0, tk.END)
+            selected_index: Optional[int] = None
+            for idx, profile in enumerate(profiles):
+                self.profile_listbox.insert(tk.END, profile.name)
+                if profile.id == selected_id:
+                    selected_index = idx
+            if selected_index is not None:
+                self.profile_listbox.selection_clear(0, tk.END)
+                self.profile_listbox.selection_set(selected_index)
+                self.profile_listbox.activate(selected_index)
+                self.profile_listbox.see(selected_index)
+            else:
+                self.profile_listbox.selection_clear(0, tk.END)
+        finally:
+            self._in_opnsense_refresh = False
+        self._update_profile_buttons_state()
+
+    def _refresh_user_profile_listbox(self) -> None:
+        if not self.user_profile_listbox:
+            return
+        profiles = self.manager.list_user_profiles()
+        selected_id = self.app_state.current_user_profile_id
+
+        self._in_user_profile_refresh = True
+        try:
+            self.user_profile_listbox.delete(0, tk.END)
+            selected_index: Optional[int] = None
+            for idx, profile in enumerate(profiles):
+                self.user_profile_listbox.insert(tk.END, profile.name)
+                if profile.id == selected_id:
+                    selected_index = idx
+            if selected_index is not None:
+                self.user_profile_listbox.selection_clear(0, tk.END)
+                self.user_profile_listbox.selection_set(selected_index)
+                self.user_profile_listbox.activate(selected_index)
+                self.user_profile_listbox.see(selected_index)
+            else:
+                self.user_profile_listbox.selection_clear(0, tk.END)
+        finally:
+            self._in_user_profile_refresh = False
+        self._update_user_profile_buttons_state()
 
     # ------------------------------------------------------------------
-    # Profile handling
+    # Profile helpers
     # ------------------------------------------------------------------
-    def _refresh_profile_listbox(self) -> None:
-        self.profile_listbox.delete(0, tk.END)
-        for profile in self.profiles:
-            self.profile_listbox.insert(tk.END, profile.get("ProfileName", "(unnamed)"))
-        if self.profiles:
-            index = min(self.current_profile_index, len(self.profiles) - 1)
-            self.profile_listbox.selection_clear(0, tk.END)
-            self.profile_listbox.selection_set(index)
-            self.profile_listbox.activate(index)
-        self._refresh_action_profile_selector()
-
-    def _on_profile_selected(self, event) -> None:
-        if not self.profile_listbox.curselection():
-            return
-        new_index = self.profile_listbox.curselection()[0]
-        if new_index == self.current_profile_index:
-            return
-        self._update_profile_from_vars()
-        self.current_profile_index = new_index
-        self._load_profile_into_vars()
 
     def _create_profile(self) -> None:
-        self._update_profile_from_vars()
-        new_profile = DEFAULT_PROFILE.copy()
-        suffix = len(self.profiles) + 1
-        new_profile["ProfileName"] = f"New Profile {suffix}"
-        self.profiles.append(new_profile)
-        self.current_profile_index = len(self.profiles) - 1
-        self._refresh_profile_listbox()
-        self._load_profile_into_vars()
+        name = simpledialog.askstring("New OPNsense Profile", "Profile name:", parent=self)
+        if name is None:
+            return
+        try:
+            profile = self.manager.create_opnsense_profile(name)
+        except ValueError as exc:
+            messagebox.showerror("Cannot create profile", str(exc))
+            return
+        self.manager.set_selected_opnsense_profile_id(profile.id)
+        self.app_state.current_opnsense_profile_id = profile.id
+        self._persist_and_export(profile_id=profile.id, user_profile_id=self.app_state.current_user_profile_id)
+        self._set_status(f"OPNsense profile '{profile.name}' created.")
+
+    def _rename_profile(self) -> None:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            return
+        new_name = simpledialog.askstring(
+            "Rename OPNsense Profile",
+            "New profile name:",
+            initialvalue=profile.name,
+            parent=self,
+        )
+        if new_name is None:
+            return
+        try:
+            self.manager.rename_opnsense_profile(profile.id, new_name)
+        except ValueError as exc:
+            messagebox.showerror("Cannot rename profile", str(exc))
+            return
+        self._persist_and_export(profile_id=profile.id, user_profile_id=self.app_state.current_user_profile_id)
+        self._set_status(f"OPNsense profile renamed to '{new_name}'.")
+
+    def _duplicate_profile(self) -> None:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            return
+        try:
+            clone = self.manager.duplicate_opnsense_profile(profile.id)
+        except ValueError as exc:
+            messagebox.showerror("Cannot duplicate profile", str(exc))
+            return
+        self.app_state.current_opnsense_profile_id = clone.id
+        self._persist_and_export(profile_id=clone.id, user_profile_id=self.app_state.current_user_profile_id)
+        self._set_status(f"OPNsense profile '{clone.name}' duplicated.")
 
     def _delete_profile(self) -> None:
-        if not self.profiles:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
             return
-        if not messagebox.askyesno("Confirm", "ต้องการลบโปรไฟล์นี้หรือไม่?"):
+        if not messagebox.askyesno(
+            "Delete OPNsense Profile",
+            f"Delete profile '{profile.name}'? This cannot be undone.",
+            parent=self,
+        ):
             return
-        del self.profiles[self.current_profile_index]
-        if not self.profiles:
-            self.profiles = [DEFAULT_PROFILE.copy()]
-        self.current_profile_index = min(self.current_profile_index, len(self.profiles) - 1)
-        self._refresh_profile_listbox()
-        self._load_profile_into_vars()
-
-    def _save_current_profile(self) -> None:
-        self._update_profile_from_vars()
-        self._refresh_profile_listbox()
-        messagebox.showinfo("Saved", "บันทึกโปรไฟล์เรียบร้อยแล้ว")
-
-    def _update_profile_from_vars(self) -> None:
-        if not self.profiles:
+        try:
+            self.manager.delete_opnsense_profile(profile.id)
+        except ValueError as exc:
+            messagebox.showerror("Cannot delete profile", str(exc))
             return
-        profile = self.profiles[self.current_profile_index]
-        for key, var in self.profile_vars.items():
-            profile[key] = var.get().strip()
+        new_profile = self.manager.get_selected_opnsense_profile()
+        self.app_state.current_opnsense_profile_id = new_profile.id if new_profile else None
+        self._persist_and_export(
+            profile_id=new_profile.id if new_profile else None,
+            user_profile_id=self.app_state.current_user_profile_id,
+        )
+        self._set_status(f"OPNsense profile '{profile.name}' deleted.")
 
-    def _load_profile_into_vars(self) -> None:
-        profile = self.profiles[self.current_profile_index]
-        for key, var in self.profile_vars.items():
-            var.set(profile.get(key, ""))
+    def _on_opnsense_profile_selected(self, event) -> None:
+        if self._in_opnsense_refresh or not self.profile_listbox:
+            return
+        selection = self.profile_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        profiles = self.manager.list_opnsense_profiles()
+        if index >= len(profiles):
+            return
+        profile = profiles[index]
+        self.app_state.current_opnsense_profile_id = profile.id
+        self.manager.set_selected_opnsense_profile_id(profile.id)
+
+    def _update_profile_buttons_state(self) -> None:
+        profiles = self.manager.list_opnsense_profiles()
+        selected_id = self.app_state.current_opnsense_profile_id
+        selection_exists = selected_id is not None
+        multiple_profiles = len(profiles) > 1
+
+        if self.btn_profile_rename:
+            self.btn_profile_rename.configure(state=tk.NORMAL if selection_exists else tk.DISABLED)
+        if self.btn_profile_duplicate:
+            self.btn_profile_duplicate.configure(state=tk.NORMAL if selection_exists else tk.DISABLED)
+        if self.btn_profile_delete:
+            state = tk.NORMAL if selection_exists and multiple_profiles else tk.DISABLED
+            self.btn_profile_delete.configure(state=state)
+
+
+    def _update_user_profile_buttons_state(self) -> None:
+        profiles = self.manager.list_user_profiles()
+        selected_id = self.app_state.current_user_profile_id
+        selection_exists = selected_id is not None
+        multiple_profiles = len(profiles) > 1
+
+        if self.btn_user_profile_rename:
+            self.btn_user_profile_rename.configure(state=tk.NORMAL if selection_exists else tk.DISABLED)
+        if self.btn_user_profile_duplicate:
+            self.btn_user_profile_duplicate.configure(state=tk.NORMAL if selection_exists else tk.DISABLED)
+        if self.btn_user_profile_delete:
+            state = tk.NORMAL if selection_exists and multiple_profiles else tk.DISABLED
+            self.btn_user_profile_delete.configure(state=state)
+
+    def _get_selected_user_profile(self) -> Optional[UserProfile]:
+        selected_id = self.app_state.current_user_profile_id
+        if not selected_id:
+            return None
+        try:
+            return self.manager.get_user_profile(selected_id)
+        except ValueError:
+            return None
+
+    def _create_user_profile(self) -> None:
+        name = simpledialog.askstring("New User Profile", "User profile name:", parent=self)
+        if name is None:
+            return
+        try:
+            profile = self.manager.create_user_profile(name)
+        except ValueError as exc:
+            messagebox.showerror("Cannot create user profile", str(exc))
+            return
+        self.manager.set_selected_user_profile_id(profile.id)
+        self.app_state.set_current_user_profile_id(profile.id)
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id, user_profile_id=profile.id
+        )
+        self._set_status(f"User profile '{profile.name}' created.")
+
+    def _rename_user_profile(self) -> None:
+        profile = self._get_selected_user_profile()
+        if not profile:
+            return
+        new_name = simpledialog.askstring(
+            "Rename User Profile",
+            "New user profile name:",
+            initialvalue=profile.name,
+            parent=self,
+        )
+        if new_name is None:
+            return
+        try:
+            self.manager.rename_user_profile(profile.id, new_name)
+        except ValueError as exc:
+            messagebox.showerror("Cannot rename user profile", str(exc))
+            return
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id, user_profile_id=profile.id
+        )
+        self._set_status(f"User profile renamed to '{new_name}'.")
+
+    def _duplicate_user_profile(self) -> None:
+        profile = self._get_selected_user_profile()
+        if not profile:
+            return
+        try:
+            clone = self.manager.duplicate_user_profile(profile.id)
+        except ValueError as exc:
+            messagebox.showerror("Cannot duplicate user profile", str(exc))
+            return
+        self.app_state.set_current_user_profile_id(clone.id)
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id, user_profile_id=clone.id
+        )
+        self._set_status(f"User profile '{clone.name}' duplicated.")
+
+    def _delete_user_profile(self) -> None:
+        profile = self._get_selected_user_profile()
+        if not profile:
+            return
+        if not messagebox.askyesno(
+            "Delete User Profile",
+            f"Delete user profile '{profile.name}'? This cannot be undone.",
+            parent=self,
+        ):
+            return
+        try:
+            self.manager.delete_user_profile(profile.id)
+        except ValueError as exc:
+            messagebox.showerror("Cannot delete user profile", str(exc))
+            return
+        new_profile = self.manager.get_selected_user_profile()
+        self.app_state.set_current_user_profile_id(new_profile.id if new_profile else None)
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id,
+            user_profile_id=new_profile.id if new_profile else None,
+        )
+        self._set_status(f"User profile '{profile.name}' deleted.")
+
+    def _on_user_profile_selected(self, event) -> None:
+        if self._in_user_profile_refresh or not self.user_profile_listbox:
+            return
+        selection = self.user_profile_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        profiles = self.manager.list_user_profiles()
+        if index >= len(profiles):
+            return
+        profile = profiles[index]
+        self.app_state.set_current_user_profile_id(profile.id)
+        self.manager.set_selected_user_profile_id(profile.id)
+
+    def _get_selected_opnsense_profile(self) -> Optional[OPNsenseProfile]:
+        selected_id = self.app_state.current_opnsense_profile_id
+        if not selected_id:
+            return None
+        try:
+            return self.manager.get_opnsense_profile(selected_id)
+        except ValueError:
+            return None
+
+    def _load_selected_opnsense_profile(self) -> None:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            self.profile_name_var.set("No OPNsense profile selected")
+            for var in self.connection_vars.values():
+                var.set("")
+            self._clear_settings_form()
+            self._set_profile_form_state(False)
+            return
+
+        self.profile_name_var.set(profile.name)
+        connection = profile.settings.get("connection", {})
+        for key, var in self.connection_vars.items():
+            var.set(connection.get(key, DEFAULT_CONNECTION.get(key, "")))
+        self._load_settings_into_vars(profile.settings.get("automation", {}))
+        self._set_profile_form_state(True)
+
+    def _set_profile_form_state(self, enabled: bool) -> None:
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for entry in self.connection_entries + self.settings_entries:
+            entry.configure(state=state)
 
     # ------------------------------------------------------------------
-    # Settings handling
+    # Settings helpers
     # ------------------------------------------------------------------
-    def _load_settings_into_vars(self) -> None:
-        def get_value(settings_dict, path: Tuple[str, ...]):
-            current = settings_dict
+    def _clear_settings_form(self) -> None:
+        for var in self.settings_vars.values():
+            var.set("")
+
+    def _load_settings_into_vars(self, settings: Dict[str, object]) -> None:
+        def get_value(path: Tuple[str, ...]):
+            current = settings
             for part in path:
                 if not isinstance(current, dict):
                     return ""
-                current = current.get(part, "")
+                current = current.get(part)
             return "" if current is None else str(current)
 
         for path, var in self.settings_vars.items():
-            var.set(get_value(self.settings, path))
+            var.set(get_value(path))
 
     def _collect_settings_from_vars(self) -> Dict[str, object]:
-        settings = {
-            "GroupName": self.settings_vars[("GroupName",)].get().strip(),
-            "GroupDesc": self.settings_vars[("GroupDesc",)].get().strip(),
-            "VpnTunnelNetwork": self.settings_vars[("VpnTunnelNetwork",)].get().strip(),
-            "VpnLocalNetwork": self.settings_vars[("VpnLocalNetwork",)].get().strip(),
-            "StaticKeyMode": self.settings_vars[("StaticKeyMode",)].get().strip(),
-            "VpnDevType": self.settings_vars[("VpnDevType",)].get().strip(),
-            "VpnTopology": self.settings_vars[("VpnTopology",)].get().strip(),
-            "InterfaceDesc": self.settings_vars[("InterfaceDesc",)].get().strip(),
-            "NamePatterns": {
-                "CaPrefix": self.settings_vars[("NamePatterns", "CaPrefix")].get().strip(),
-                "ServerCn": self.settings_vars[("NamePatterns", "ServerCn")].get().strip(),
-                "StaticKeyPrefix": self.settings_vars[("NamePatterns", "StaticKeyPrefix")].get().strip(),
-                "InstancePrefix": self.settings_vars[("NamePatterns", "InstancePrefix")].get().strip(),
-            },
-            "Lifetimes": {},
-            "Firewall": {
-                "VpnListenPort": self.settings_vars[("Firewall", "VpnListenPort")].get().strip(),
-                "VpnProto": self.settings_vars[("Firewall", "VpnProto")].get().strip(),
-            },
-        }
+        automation = deepcopy(DEFAULT_AUTOMATION)
 
-        lifetime_fields = {
-            "CALifetimeDays": ("Lifetimes", "CALifetimeDays"),
-            "ServerCertLifetimeDays": ("Lifetimes", "ServerCertLifetimeDays"),
-            "ClientCertLifetimeDays": ("Lifetimes", "ClientCertLifetimeDays"),
-        }
+        def set_value(path: Tuple[str, ...], value: str) -> None:
+            current = automation
+            for part in path[:-1]:
+                current = current.setdefault(part, {})
+            current[path[-1]] = value
 
-        for key, path in lifetime_fields.items():
-            value = self.settings_vars[path].get().strip()
-            if value:
+        for path, var in self.settings_vars.items():
+            value = var.get().strip()
+            if path[0] == "Lifetimes" and value:
                 try:
-                    settings["Lifetimes"][key] = int(value)
+                    value_int = int(value)
                 except ValueError:
-                    raise ValueError(f"ค่าของ {key} ต้องเป็นตัวเลขจำนวนเต็ม")
+                    raise ValueError(f"Field '{path[-1]}' must be an integer.")
+                set_value(path, value_int)
             else:
-                settings["Lifetimes"][key] = 0
-
-        return settings
+                set_value(path, value)
+        return automation
 
     def _save_settings(self) -> None:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            messagebox.showerror("No profile", "Select a profile first.")
+            return
         try:
-            self.settings = self._collect_settings_from_vars()
+            automation = self._collect_settings_from_vars()
         except ValueError as exc:
             messagebox.showerror("Invalid data", str(exc))
             return
-        self.store.save_settings(self.settings)
-        messagebox.showinfo("Saved", "บันทึกการตั้งค่าเรียบร้อยแล้ว")
+        self.manager.update_opnsense_settings(profile.id, automation)
+        self._persist_and_export(profile_id=profile.id, user_profile_id=self.app_state.current_user_profile_id)
+        self._set_status("Settings saved.")
 
     # ------------------------------------------------------------------
-    # User handling
+    # Connection helpers
     # ------------------------------------------------------------------
-    def _refresh_user_listbox(self) -> None:
-        self.user_listbox.delete(0, tk.END)
-        for user in self.users:
-            self.user_listbox.insert(tk.END, user.get("Name", "(unnamed)"))
-        if self.users and self.current_user_index is not None:
-            index = min(self.current_user_index, len(self.users) - 1)
-            self.user_listbox.selection_clear(0, tk.END)
-            self.user_listbox.selection_set(index)
-            self.user_listbox.activate(index)
-        elif not self.users:
-            self.current_user_index = None
+    def _save_connection(self) -> None:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            messagebox.showerror("No profile", "Select a profile first.")
+            return
+        payload = {key: var.get().strip() for key, var in self.connection_vars.items()}
+        self.manager.update_opnsense_connection(profile.id, payload)
+        self._persist_and_export(profile_id=profile.id, user_profile_id=self.app_state.current_user_profile_id)
+        self._set_status("Connection details saved.")
+
+    # ------------------------------------------------------------------
+    # User helpers
+    # ------------------------------------------------------------------
+    def _refresh_users_for_current_profile(self) -> None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile:
+            self._refresh_user_listbox([])
+            self._clear_user_form()
+            self.current_user_username = None
+            self._last_loaded_user = None
+            self._update_user_controls_state()
+            return
+
+        users = user_profile.users
+        self._refresh_user_listbox(users)
+        if self.current_user_username:
+            for user in users:
+                if user.username.lower() == self.current_user_username.lower():
+                    self._select_user_in_list(user.username)
+                    break
+            else:
+                self.current_user_username = None
+        if self.current_user_username is None and users:
+            self._select_user_in_list(users[0].username)
+        elif not users:
+            self._clear_user_form()
+            self.current_user_username = None
+            self._last_loaded_user = None
+        self._update_user_controls_state()
+
+    def _refresh_user_listbox(self, users: List[User]) -> None:
+        if not self.user_listbox:
+            return
+        self._in_user_refresh = True
+        try:
+            self.user_listbox.delete(0, tk.END)
+            for user in users:
+                self.user_listbox.insert(tk.END, user.username)
+            if users:
+                self.user_listbox.configure(state=tk.NORMAL)
+            else:
+                self.user_listbox.configure(state=tk.DISABLED)
+                self.user_listbox.selection_clear(0, tk.END)
+        finally:
+            self._in_user_refresh = False
+
+    def _update_user_controls_state(self) -> None:
+        user_profile = self._get_selected_user_profile()
+        has_profile = user_profile is not None
+        has_selection = has_profile and self.current_user_username is not None
+
+        if self.users_btn_new:
+            self.users_btn_new.configure(state=tk.NORMAL if has_profile else tk.DISABLED)
+        if self.users_btn_duplicate:
+            self.users_btn_duplicate.configure(state=tk.NORMAL if has_selection else tk.DISABLED)
+        if self.users_btn_delete:
+            self.users_btn_delete.configure(state=tk.NORMAL if has_selection else tk.DISABLED)
+        for entry in self.user_entries:
+            entry.configure(state=tk.NORMAL if has_profile else tk.DISABLED)
+        if self.user_save_button:
+            self.user_save_button.configure(state=tk.NORMAL if has_profile else tk.DISABLED)
+
+    def _clear_user_form(self) -> None:
+        for var in self.user_vars.values():
+            var.set("")
+
+    def _populate_user_form(self, user: User) -> None:
+        self.user_vars["username"].set(user.username)
+        self.user_vars["password"].set(user.password)
+        self.user_vars["full_name"].set(user.full_name)
+        self.user_vars["email"].set(user.email)
+
+    def _new_user(self, focus_username: bool = True) -> None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile:
+            return
+        template = deepcopy(DEFAULT_USER_TEMPLATE)
+        taken = {user.username for user in user_profile.users}
+        candidate = make_unique_username(template["username"], {name.lower() for name in taken})
+        self.user_vars["username"].set(candidate)
+        self.user_vars["password"].set(template["password"])
+        self.user_vars["full_name"].set(template["full_name"])
+        self.user_vars["email"].set(template["email"])
+
+        if self.user_listbox:
+            self._in_user_refresh = True
+            try:
+                self.user_listbox.selection_clear(0, tk.END)
+            finally:
+                self._in_user_refresh = False
+        if focus_username and self.user_entries:
+            self.user_entries[0].focus_set()
+        self.current_user_username = None
+        self._last_loaded_user = None
+        self._update_user_controls_state()
+
+    def _duplicate_user(self) -> None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile or not self.current_user_username:
+            return
+        try:
+            clone = self.manager.duplicate_user(user_profile.id, self.current_user_username)
+        except ValueError as exc:
+            messagebox.showerror("Cannot duplicate user", str(exc))
+            return
+        self.current_user_username = clone.username
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id,
+            user_profile_id=user_profile.id,
+            username=clone.username,
+        )
+        self._set_status(f"User '{clone.username}' duplicated.")
+        self._refresh_users_for_current_profile()
+        self._select_user_in_list(clone.username)
 
     def _on_user_selected(self, event) -> None:
-        if not self.user_listbox.curselection():
+        if self._in_user_refresh or not self.user_listbox:
             return
-        new_index = self.user_listbox.curselection()[0]
-        if self.current_user_index == new_index:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile:
             return
-        self._update_user_from_vars()
-        self.current_user_index = new_index
-        self._load_current_user_into_vars()
+        selection = self.user_listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if index >= len(user_profile.users):
+            return
+        self._select_user_in_list(user_profile.users[index].username)
 
-    def _create_user(self) -> None:
-        self._update_user_from_vars()
-        new_user = DEFAULT_USER.copy()
-        suffix = len(self.users) + 1
-        new_user["Name"] = f"user{suffix}"
-        self.users.append(new_user)
-        self.current_user_index = len(self.users) - 1
-        self._refresh_user_listbox()
-        self._load_current_user_into_vars()
+    def _select_user_in_list(self, username: str) -> None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile or not self.user_listbox:
+            return
+        for idx, user in enumerate(user_profile.users):
+            if user.username.lower() == username.lower():
+                self._in_user_refresh = True
+                try:
+                    self.user_listbox.selection_clear(0, tk.END)
+                    self.user_listbox.selection_set(idx)
+                    self.user_listbox.activate(idx)
+                    self.user_listbox.see(idx)
+                finally:
+                    self._in_user_refresh = False
+                self.current_user_username = user.username
+                self._last_loaded_user = deepcopy(user)
+                self._populate_user_form(user)
+                self._update_user_controls_state()
+                return
+        self.current_user_username = None
+        self._last_loaded_user = None
+        self._update_user_controls_state()
+
+    def _save_user(self) -> None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile:
+            messagebox.showerror("No user profile", "Select a user profile first.")
+            return
+        username = self.user_vars["username"].get().strip()
+        if not username:
+            messagebox.showerror("Invalid user", "Username cannot be empty.")
+            return
+        user = User(
+            username=username,
+            password=self.user_vars["password"].get(),
+            full_name=self.user_vars["full_name"].get(),
+            email=self.user_vars["email"].get(),
+        )
+        try:
+            if self.current_user_username is None:
+                self.manager.add_user(user_profile.id, user)
+            else:
+                user.original_username = self.current_user_username
+                self.manager.update_user(user_profile.id, user)
+        except ValueError as exc:
+            messagebox.showerror("Cannot save user", str(exc))
+            return
+        self.current_user_username = user.username
+        self._last_loaded_user = deepcopy(user)
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id,
+            user_profile_id=user_profile.id,
+            username=user.username,
+        )
+        self._set_status(f"User '{user.username}' saved.")
+        self._refresh_users_for_current_profile()
+        self._select_user_in_list(user.username)
 
     def _delete_user(self) -> None:
-        if self.current_user_index is None:
+        user_profile = self._get_selected_user_profile()
+        if not user_profile or not self.current_user_username:
+            messagebox.showinfo("Delete User", "Select a user first.")
             return
-        if not messagebox.askyesno("Confirm", "ต้องการลบผู้ใช้นี้หรือไม่?"):
+        username = self.current_user_username
+        if not messagebox.askyesno("Delete User", f"Delete user '{username}'?", parent=self):
             return
-        del self.users[self.current_user_index]
-        if not self.users:
-            self.current_user_index = None
-            for var in self.user_vars.values():
-                var.set("")
-        else:
-            self.current_user_index = min(self.current_user_index, len(self.users) - 1)
-            self._load_current_user_into_vars()
-        self._refresh_user_listbox()
-
-    def _save_current_user(self) -> None:
-        self._update_user_from_vars()
-        self._refresh_user_listbox()
-        messagebox.showinfo("Saved", "บันทึกข้อมูลผู้ใช้เรียบร้อยแล้ว")
-
-    def _update_user_from_vars(self) -> None:
-        if self.current_user_index is None:
-            return
-        user = self.users[self.current_user_index]
-        for key, var in self.user_vars.items():
-            user[key] = var.get().strip()
-
-    def _load_current_user_into_vars(self) -> None:
-        if self.current_user_index is None:
-            for var in self.user_vars.values():
-                var.set("")
-            return
-        user = self.users[self.current_user_index]
-        for key, var in self.user_vars.items():
-            var.set(user.get(key, ""))
-
-    # ------------------------------------------------------------------
-    # Saving helpers
-    # ------------------------------------------------------------------
-    def _save_all(self, show_message: bool = True) -> None:
-        self._update_profile_from_vars()
         try:
-            self.settings = self._collect_settings_from_vars()
+            self.manager.delete_user(user_profile.id, username)
         except ValueError as exc:
-            messagebox.showerror("Invalid data", str(exc))
+            messagebox.showerror("Cannot delete user", str(exc))
             return
-        self._update_user_from_vars()
-
-        self.store.save_profiles(self.profiles)
-        self.store.save_settings(self.settings)
-        self.store.save_users(self.users)
-
-        if show_message:
-            messagebox.showinfo("Saved", "บันทึกไฟล์คอนฟิกทั้งหมดเรียบร้อยแล้ว")
+        self.current_user_username = None
+        self._last_loaded_user = None
+        self._persist_and_export(
+            profile_id=self.app_state.current_opnsense_profile_id,
+            user_profile_id=user_profile.id,
+        )
+        self._set_status(f"User '{username}' deleted.")
+        self._refresh_users_for_current_profile()
 
     # ------------------------------------------------------------------
-    # Script execution
+    # Actions tab helpers
     # ------------------------------------------------------------------
+    def _refresh_action_opnsense_selector(self) -> None:
+        if not self.action_opnsense_combo:
+            return
+        profiles = self.manager.list_opnsense_profiles()
+        labels = [profile.name for profile in profiles]
+        self._action_opnsense_ids = [profile.id for profile in profiles]
+
+        selected_id = self._actions_opnsense_profile_id
+        if selected_id not in self._action_opnsense_ids:
+            selected_id = self.app_state.current_opnsense_profile_id or (
+                self._action_opnsense_ids[0] if self._action_opnsense_ids else None
+            )
+            self._actions_opnsense_profile_id = selected_id
+
+        self._in_action_refresh = True
+        try:
+            self.action_opnsense_combo["values"] = labels
+            if not self._action_opnsense_ids:
+                self.actions_opnsense_var.set("")
+                self.action_opnsense_combo.set("")
+                self.action_opnsense_combo.configure(state="disabled")
+            else:
+                index = (
+                    self._action_opnsense_ids.index(selected_id)
+                    if selected_id in self._action_opnsense_ids
+                    else 0
+                )
+                self.action_opnsense_combo.configure(state="readonly")
+                self.action_opnsense_combo.current(index)
+                self.actions_opnsense_var.set(labels[index])
+        finally:
+            self._in_action_refresh = False
+        self._update_action_buttons_state()
+
+    def _refresh_action_user_profile_selector(self) -> None:
+        if not self.action_user_profile_combo:
+            return
+        profiles = self.manager.list_user_profiles()
+        labels = [profile.name for profile in profiles]
+        self._action_user_profile_ids = [profile.id for profile in profiles]
+
+        selected_id = self._actions_user_profile_id
+        if selected_id not in self._action_user_profile_ids:
+            selected_id = self.app_state.current_user_profile_id or (
+                self._action_user_profile_ids[0] if self._action_user_profile_ids else None
+            )
+            self._actions_user_profile_id = selected_id
+
+        self._in_action_refresh = True
+        try:
+            self.action_user_profile_combo["values"] = labels
+            if not self._action_user_profile_ids:
+                self.actions_user_profile_var.set("")
+                self.action_user_profile_combo.set("")
+                self.action_user_profile_combo.configure(state="disabled")
+            else:
+                index = (
+                    self._action_user_profile_ids.index(selected_id)
+                    if selected_id in self._action_user_profile_ids
+                    else 0
+                )
+                self.action_user_profile_combo.configure(state="readonly")
+                self.action_user_profile_combo.current(index)
+                self.actions_user_profile_var.set(labels[index])
+        finally:
+            self._in_action_refresh = False
+        self._update_action_buttons_state()
+
+    def _on_action_opnsense_selected(self, event) -> None:
+        if self._in_action_refresh or not self.action_opnsense_combo:
+            return
+        selection = self.action_opnsense_combo.current()
+        if selection < 0 or selection >= len(self._action_opnsense_ids):
+            return
+        self._actions_opnsense_profile_id = self._action_opnsense_ids[selection]
+        self._update_action_buttons_state()
+
+    def _on_action_user_profile_selected(self, event) -> None:
+        if self._in_action_refresh or not self.action_user_profile_combo:
+            return
+        selection = self.action_user_profile_combo.current()
+        if selection < 0 or selection >= len(self._action_user_profile_ids):
+            return
+        self._actions_user_profile_id = self._action_user_profile_ids[selection]
+        self._update_action_buttons_state()
+
+    def _update_action_buttons_state(self) -> None:
+        has_opnsense = self._actions_opnsense_profile_id is not None
+        has_user_profile = self._actions_user_profile_id is not None
+
+        if self.action_opnsense_combo:
+            state = "readonly" if self._action_opnsense_ids else "disabled"
+            self.action_opnsense_combo.configure(state=state)
+        if self.action_user_profile_combo:
+            state = "readonly" if self._action_user_profile_ids else "disabled"
+            self.action_user_profile_combo.configure(state=state)
+        if self.full_setup_button:
+            self.full_setup_button.configure(
+                state=tk.NORMAL if has_opnsense and has_user_profile else tk.DISABLED
+            )
+        if self.build_button:
+            self.build_button.configure(
+                state=tk.NORMAL if has_opnsense and has_user_profile else tk.DISABLED
+            )
+
     def _run_full_setup(self) -> None:
-        self._run_script("Run-Full-Setup.ps1", "Full Setup")
+        self._run_script("Run-Full-Setup.ps1", "Full Setup", require_users=False)
 
     def _run_build_ovpn(self) -> None:
-        self._run_script("Build-Ovpn-Files.ps1", "Build OVPN")
+        self._run_script("Build-Ovpn-Files.ps1", "Build OVPN", require_users=True)
 
-    def _run_script(self, script_name: str, friendly_name: str) -> None:
+    def _run_script(self, script_name: str, friendly_name: str, require_users: bool) -> None:
+        if not self._commit_profile_changes():
+            return
+
+        opnsense_id = self._actions_opnsense_profile_id
+        user_profile_id = self._actions_user_profile_id
+        if not opnsense_id or not user_profile_id:
+            messagebox.showerror("Missing selection", "Select both profiles first.")
+            return
         try:
-            self._save_all(show_message=False)
+            opnsense_profile = self.manager.get_opnsense_profile(opnsense_id)
         except ValueError:
-            # Error already shown to the user.
+            messagebox.showerror("Profile error", "Selected OPNsense profile not found.")
+            self._refresh_action_opnsense_selector()
+            return
+        try:
+            user_profile = self.manager.get_user_profile(user_profile_id)
+        except ValueError:
+            messagebox.showerror("Profile error", "Selected user profile not found.")
+            self._refresh_action_user_profile_selector()
+            return
+
+        if require_users and not user_profile.users:
+            self._append_log("\n>>> No users in selected User Profile.\n")
+            return
+
+        try:
+            self._persist_and_export(
+                profile_id=opnsense_id,
+                user_profile_id=user_profile_id,
+                suppress_errors=False,
+            )
+        except ValueError as exc:
+            messagebox.showerror("Export failed", str(exc))
             return
 
         powershell = self._get_powershell_executable()
         if not powershell:
             messagebox.showerror(
                 "PowerShell not found",
-                "ไม่พบคำสั่ง PowerShell หรือ pwsh ในระบบ\nกรุณาติดตั้งก่อนใช้งาน",
+                "Could not locate 'pwsh' or 'powershell'. Please install PowerShell.",
             )
             return
 
         script_path = BASE_DIR / script_name
         if not script_path.exists():
-            messagebox.showerror("Missing script", f"ไม่พบไฟล์ {script_name}")
+            messagebox.showerror("Missing script", f"Could not find {script_name}.")
             return
 
-        self._append_log(f"\n>>> เริ่มรัน {friendly_name}\n")
-        self._set_action_buttons_state(tk.DISABLED)
+        profiles = self.manager.list_opnsense_profiles()
+        try:
+            profile_index = next(idx for idx, item in enumerate(profiles) if item.id == opnsense_id)
+        except StopIteration:
+            messagebox.showerror("Profile error", "Selected OPNsense profile not found.")
+            return
+
+        display_name = opnsense_profile.name or f"Profile {profile_index + 1}"
+        user_info = f" (user profile: {user_profile.name} / {len(user_profile.users)} users)"
+        self._append_log(
+            f"\n>>> Starting {friendly_name} for {display_name}{user_info}\n"
+        )
+        self._set_button_state(tk.DISABLED)
 
         def worker() -> None:
-            cmd = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)]
+            cmd = [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-ProfileIndex",
+                str(profile_index + 1),
+                "-ProfileName",
+                display_name,
+            ]
             process = subprocess.Popen(
                 cmd,
                 cwd=str(BASE_DIR),
@@ -651,18 +1260,60 @@ class App(tk.Tk):
                 self._append_log(line)
             retcode = process.wait()
             if retcode == 0:
-                self._append_log(f">>> {friendly_name} เสร็จสมบูรณ์\n")
+                self._append_log(f">>> {friendly_name} completed successfully.\n")
             else:
-                self._append_log(f">>> {friendly_name} ล้มเหลว (exit code {retcode})\n")
-            self._set_action_buttons_state(tk.NORMAL)
+                self._append_log(f">>> {friendly_name} failed (exit code {retcode}).\n")
+            self._set_button_state(tk.NORMAL)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _set_action_buttons_state(self, state: str) -> None:
-        for button in (self.save_button, self.full_setup_button, self.build_button):
-            button.configure(state=state)
+    def _commit_profile_changes(self) -> bool:
+        profile = self._get_selected_opnsense_profile()
+        if not profile:
+            messagebox.showerror("No profile", "Select a profile first.")
+            return False
+        payload = {key: var.get().strip() for key, var in self.connection_vars.items()}
+        self.manager.update_opnsense_connection(profile.id, payload)
+        try:
+            automation = self._collect_settings_from_vars()
+        except ValueError as exc:
+            messagebox.showerror("Invalid data", str(exc))
+            return False
+        self.manager.update_opnsense_settings(profile.id, automation)
+        return True
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+    def _persist_and_export(
+        self,
+        profile_id: Optional[str] = None,
+        user_profile_id: Optional[str] = None,
+        username: Optional[str] = None,
+        suppress_errors: bool = True,
+    ) -> None:
+        self.manager.save()
+        try:
+            self.manager.export_legacy_files(
+                opnsense_profile_id=profile_id,
+                user_profile_id=user_profile_id,
+                username=username,
+            )
+        except ValueError:
+            if not suppress_errors:
+                raise
+
+    # ------------------------------------------------------------------
+    # Misc helpers
+    # ------------------------------------------------------------------
+    def _set_button_state(self, state: str) -> None:
+        for button in (self.full_setup_button, self.build_button):
+            if button:
+                button.configure(state=state)
 
     def _append_log(self, text: str) -> None:
+        if not self.log_text:
+            return
+
         def append() -> None:
             self.log_text.configure(state=tk.NORMAL)
             self.log_text.insert(tk.END, text)
@@ -678,6 +1329,9 @@ class App(tk.Tk):
                 return candidate
         return None
 
+    def _set_status(self, message: str) -> None:
+        self.status_var.set(message)
+
 
 def main() -> None:
     app = App()
@@ -689,3 +1343,7 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.exit(0)
+
+
+
+

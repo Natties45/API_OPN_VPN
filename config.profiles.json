@@ -1,7 +1,7 @@
 {
   "profiles": [
     {
-      "ProfileName": "OPNsense-Site-A (103.138.178.72)",
+      "ProfileName": "OPNsense-Site-A",
       "ApiBaseUrl": "https://103.138.178.72:4443",
       "ApiKey": "CSlhiimhqQCrpdSvFbcdOxmemTJRvgcUOmK/YdBdrgTpR8ulYFAwJFfVLmO3rAr7Jk5VPSefA/vRtAzt",
       "ApiSecret": "iESOtCO5H7LBDdj9LNDDKIIRCwB7r+p5qBD4el8XP7d806mqRXSJcUpFTsXXn12UiOetFqkrxP9UEoTC",
